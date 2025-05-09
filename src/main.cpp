@@ -9,7 +9,7 @@
 #include "Accel.h"
 #include "Utils.h"
 #include "Camera.h"
-#include "ConvertImageComputeShader.h"
+#include "HdrToLdrCompute.h"
 #include "Globals.h"
 #include "Texture.h"
 
@@ -282,9 +282,11 @@ int main() {
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED); //capture cursor
 
     static bool isRayTracing = false;
+    static int frame = 0;
     glfwSetKeyCallback(context.window, [](GLFWwindow* window, int key, int scancode, int action, int mods) {
         if (key == GLFW_KEY_P && action == GLFW_PRESS) {
             isRayTracing = !isRayTracing;
+            frame = 0;
             std::cout << (isRayTracing ? "Switched to simple Ray Tracing" : "Switched to Path Tracing") << std::endl;
         }
     });
@@ -293,10 +295,9 @@ int main() {
 
     vk::UniqueSemaphore imageAcquiredSemaphore = context.device->createSemaphoreUnique(vk::SemaphoreCreateInfo());
 
-    ConvertImageComputeShader convertImage("../src/shaders/ConvertImage.spv", context, inputImage.view.get(), outputImage.view.get());
+    HdrToLdrCompute convertImage(context, inputImage.view.get(), outputImage.view.get());
 
     //Main loop
-    int frame = 0;
     uint32_t imageIndex = 0;
     auto lastTime = std::chrono::high_resolution_clock::now();
     float timeAccumulator = 0.0f;

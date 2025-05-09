@@ -28,9 +28,15 @@ void main() {
 
     if (bool(pushConstants.pushData.isRayTracing)) {
 
-        vec2 uv = (vec2(pixelCoord) + vec2(0.5)) / vec2(screenSize);
+        // Generate reproducible random jitter per pixel and frame
+        uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.pushData.frame * 16777619));
+        vec2 jitter = vec2(rand(seed.x), rand(seed.y));
+
+        // Jittered UV for anti-aliasing (optional — remove jitter for deterministic rays)
+        vec2 uv = (vec2(pixelCoord) + jitter) / vec2(screenSize);
         uv.y = 1.0 - uv.y;
 
+        // Ray origin and direction from camera
         vec3 rayOrigin = pushConstants.camera.position;
         vec3 rayDirection = normalize(
             pushConstants.camera.direction +
@@ -38,25 +44,30 @@ void main() {
             pushConstants.camera.vertical * (uv.y - 0.5)
         );
 
+        // Initialize payload
         payload.color = vec3(0.0);
         payload.normal = vec3(0.0);
         payload.position = vec3(0.0);
         payload.done = false;
         payload.throughput = vec3(1.0);
 
+        // Trace primary ray
         traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, rayOrigin, 0.001, rayDirection, 10000.0, 0);
 
-        color += payload.color;
+        // Accumulate color
+        color = payload.color;
         vec3 position = payload.position;
         vec3 normal = normalize(payload.normal);
 
+        // Shadow ray logic
         bool isShadowed = false;
-        shadowPayload.hit = false;
         for (int i = 0; i < pointLights.length(); ++i) {
             PointLight light = pointLights[i];
             vec3 lightVec = light.position - position;
             float dist = length(lightVec);
             vec3 lightDir = normalize(lightVec);
+
+            shadowPayload.hit = false;
 
             traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 2, 0, 2, position, 0.01, lightDir, dist, 1);
 
@@ -66,16 +77,21 @@ void main() {
             }
         }
 
-        if (isShadowed)
+        // Simple shadow attenuation
+        if (isShadowed) {
             color *= 0.25;
-
-    } else {
-        //Path tracing
-        vec2 jitter = vec2(0.0);
-        if (bool(pushConstants.camera.isMoving)) {
-            uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.pushData.frame * 16777619));
-            jitter = vec2(rand(seed.x), rand(seed.y));
         }
+    }
+    else {  // Path tracing
+
+        vec2 jitter = vec2(0.0);
+
+        // Generate a reproducible random seed based on pixel + frame
+        uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.pushData.frame * 16777619));
+        uint seedX = seed.x;
+        uint seedY = seed.y;
+
+        jitter = vec2(rand(seedX), rand(seedY));
 
         vec2 screenPos = vec2(pixelCoord) + jitter;
         vec2 uv = screenPos / vec2(screenSize);
@@ -94,28 +110,26 @@ void main() {
         payload.done = false;
         payload.throughput = vec3(1.0);
 
-        uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.pushData.frame * 16777619));
-        uint seedX = seed.x;
-        uint seedY = seed.y;
-
-        for (uint depth = 0; depth < 4; ++depth) {
+        int maxDepth = 10;
+        for (int depth = 0; depth < maxDepth; ++depth) {
             traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1, rayOrigin, 0.001, rayDirection, 10000.0, 0);
 
             color += payload.throughput * payload.color;
 
             if (payload.done)
-                break;
+            break;
 
             rayOrigin = payload.position;
             rayDirection = sampleDirection(rand(seedX), rand(seedY), payload.normal);
+
+            // Mutate the seed to ensure randomness in next iteration
+            seedX ^= depth * 1664525u + 1013904223u;
+            seedY ^= depth * 22695477u + 1u;
         }
     }
 
     vec3 prevColor = imageLoad(outputImage, pixelCoord).rgb;
-    vec3 newColor = color;
+    color = (color + prevColor * float(pushConstants.pushData.frame)) / float(pushConstants.pushData.frame + 1);
 
-    if (!bool(pushConstants.camera.isMoving))
-        newColor = (newColor + prevColor * float(pushConstants.pushData.frame)) / float(pushConstants.pushData.frame + 1);
-
-    imageStore(outputImage, pixelCoord, vec4(newColor, 1.0));
+    imageStore(outputImage, pixelCoord, vec4(color, 1.0));
 }
